@@ -7,9 +7,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -34,8 +37,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.glazok.audio.HapticManager
 import com.example.glazok.audio.SpeechPriority
 import com.example.glazok.audio.SpeechQueueArbiter
+import com.example.glazok.data.GlazokPreferences
 import com.example.glazok.ui.hud.GlazokControlBar
 import com.example.glazok.ui.hud.GlazokHudOverlay
+import com.example.glazok.ui.settings.SettingsDialog
 import com.example.glazok.vision.CameraManager
 import com.example.glazok.vlm.GeminiVlmService
 import kotlinx.coroutines.launch
@@ -44,7 +49,10 @@ import kotlinx.coroutines.launch
  * Основной экран видоискателя «Глазок».
  * Объединяет:
  * - Контур 1 (Real-time On-device): CameraX, ML Kit, SmartPriceParser, TTS с 5с дебаунсом.
+ * - Фокус строго на предмете в центре видоискателя.
+ * - Озвучивание названия предмета и ценника на русском языке.
  * - Контур 2 (Deep VLM On-Demand): Двойной тап или кнопка «🔍 Состав» для подробного чтения состава и аллергенов.
+ * - Экран настроек для сохранения ключа Gemini API.
  */
 @Composable
 fun GlazokCameraScreen(
@@ -54,10 +62,11 @@ fun GlazokCameraScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
+    val preferences = remember { GlazokPreferences(context) }
     val hapticManager = remember { HapticManager(context) }
     val speechArbiter = remember { SpeechQueueArbiter(context, hapticManager) }
     val cameraManager = remember { CameraManager(context, lifecycleOwner) }
-    val vlmService = remember { GeminiVlmService() }
+    val vlmService = remember { GeminiVlmService(preferences.getGeminiApiKey()) }
 
     val frameState by cameraManager.analyzer.frameState.collectAsState()
 
@@ -65,6 +74,7 @@ fun GlazokCameraScreen(
     var currentZoom by remember { mutableFloatStateOf(0.0f) }
     var isVlmLoading by remember { mutableStateOf(false) }
     var lastVlmResult by remember { mutableStateOf<String?>(null) }
+    var isSettingsOpen by remember { mutableStateOf(false) }
 
     // Функция запуска глубокого анализа Контура 2
     val triggerVlmAnalysis = {
@@ -90,10 +100,15 @@ fun GlazokCameraScreen(
         }
     }
 
-    // Автоматическая озвучка захваченного ценника (Контур 1, арбитр сам проверяет 5с дебаунс)
-    LaunchedEffect(frameState.primaryTarget) {
+    // Автоматическая озвучка предмета или ценника по центру (арбитр сам проверяет 5с дебаунс)
+    LaunchedEffect(frameState.primaryItem, frameState.primaryTarget) {
+        if (isVlmLoading) return@LaunchedEffect
+        val item = frameState.primaryItem
         val target = frameState.primaryTarget
-        if (target != null && !isVlmLoading) {
+
+        if (item != null) {
+            speechArbiter.announceItem(item, SpeechPriority.TARGET_LOCK)
+        } else if (target != null) {
             speechArbiter.announcePriceTag(target, SpeechPriority.TARGET_LOCK)
         }
     }
@@ -128,23 +143,38 @@ fun GlazokCameraScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // 2. Высокопроизводительный Canvas HUD с рамками и прицелом
+        // 2. Высокопроизводительный Canvas HUD: рамка ТОЛЬКО для центрального предмета
         GlazokHudOverlay(
             frameState = frameState,
             modifier = Modifier.fillMaxSize()
         )
 
-        // 3. Карточка с результатами глубокого VLM-анализа (Контур 2)
+        // 3. Кнопка настроек ⚙️ в правом верхнем углу
+        IconButton(
+            onClick = { isSettingsOpen = true },
+            shape = CircleShape,
+            colors = IconButtonDefaults.iconButtonColors(
+                containerColor = Color.Black.copy(alpha = 0.65f),
+                contentColor = Color.White
+            ),
+            modifier = Modifier
+                .padding(top = 42.dp, end = 16.dp)
+                .align(Alignment.TopEnd)
+        ) {
+            Text(text = "⚙️", fontSize = 20.sp)
+        }
+
+        // 4. Карточка с результатами глубокого VLM-анализа (Контур 2)
         lastVlmResult?.let { text ->
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = Color.Black.copy(alpha = 0.85f),
+                    containerColor = Color.Black.copy(alpha = 0.88f),
                     contentColor = Color.White
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 24.dp)
+                    .padding(horizontal = 16.dp, vertical = 42.dp)
                     .align(Alignment.TopCenter)
                     .clickable { lastVlmResult = null }
             ) {
@@ -158,7 +188,7 @@ fun GlazokCameraScreen(
             }
         }
 
-        // 4. Плавающая панель управления и статуса
+        // 5. Плавающая панель управления и статуса
         GlazokControlBar(
             frameState = frameState,
             isTorchOn = isTorchOn,
@@ -172,10 +202,14 @@ fun GlazokCameraScreen(
                 cameraManager.setZoom(zoomRatio)
             },
             onSpeakCurrentTarget = {
-                frameState.primaryTarget?.let {
-                    speechArbiter.announcePriceTag(it, SpeechPriority.CRITICAL)
-                } ?: run {
-                    speechArbiter.speak("В центре кадра ценник не обнаружен", SpeechPriority.CRITICAL)
+                val item = frameState.primaryItem
+                val target = frameState.primaryTarget
+                if (item != null) {
+                    speechArbiter.announceItem(item, SpeechPriority.CRITICAL)
+                } else if (target != null) {
+                    speechArbiter.announcePriceTag(target, SpeechPriority.CRITICAL)
+                } else {
+                    speechArbiter.speak("В центре прицела предмет не обнаружен", SpeechPriority.CRITICAL)
                 }
             },
             onTriggerVlm = {
@@ -183,5 +217,18 @@ fun GlazokCameraScreen(
             },
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+
+        // 6. Диалог ввода Gemini API Key
+        if (isSettingsOpen) {
+            SettingsDialog(
+                initialApiKey = preferences.getGeminiApiKey(),
+                onDismiss = { isSettingsOpen = false },
+                onSaveApiKey = { key ->
+                    preferences.setGeminiApiKey(key)
+                    vlmService.setApiKey(key)
+                    speechArbiter.speak("Ключ Gemini сохранен", SpeechPriority.CRITICAL)
+                }
+            )
+        }
     }
 }

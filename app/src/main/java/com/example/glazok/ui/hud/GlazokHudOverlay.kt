@@ -36,7 +36,7 @@ fun GlazokHudOverlay(
         val canvasWidth = size.width
         val canvasHeight = size.height
 
-        // 1. Отрисовка рамок предметов (синий цвет)
+        // 1. Отрисовка рамок предметов (синий цвет + бейдж названия)
         for (item in frameState.detectedItems) {
             val left = item.boundingBox.left * canvasWidth
             val top = item.boundingBox.top * canvasHeight
@@ -44,11 +44,37 @@ fun GlazokHudOverlay(
             val height = item.boundingBox.height * canvasHeight
 
             drawRoundRect(
-                color = Color(0xFF2979FF).copy(alpha = 0.7f),
+                color = Color(0xFF2979FF).copy(alpha = 0.85f),
                 topLeft = Offset(left, top),
                 size = Size(width, height),
                 cornerRadius = CornerRadius(12.dp.toPx()),
-                style = Stroke(width = 2.dp.toPx())
+                style = Stroke(width = 3.dp.toPx())
+            )
+
+            // Бейдж с названием предмета над рамкой
+            val itemLabelResult = textMeasurer.measure(
+                text = item.label,
+                style = TextStyle(
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+
+            val badgeWidth = itemLabelResult.size.width + 16.dp.toPx()
+            val badgeHeight = itemLabelResult.size.height + 6.dp.toPx()
+            val badgeTop = (top - badgeHeight - 4.dp.toPx()).coerceAtLeast(0f)
+
+            drawRoundRect(
+                color = Color(0xFF2979FF),
+                topLeft = Offset(left, badgeTop),
+                size = Size(badgeWidth, badgeHeight),
+                cornerRadius = CornerRadius(6.dp.toPx())
+            )
+
+            drawText(
+                textLayoutResult = itemLabelResult,
+                topLeft = Offset(left + 8.dp.toPx(), badgeTop + 3.dp.toPx())
             )
         }
 
@@ -111,7 +137,7 @@ fun GlazokHudOverlay(
         val centerX = canvasWidth / 2f
         val centerY = canvasHeight / 2f
         val reticleRadius = 40.dp.toPx()
-        val hasTarget = frameState.primaryTarget != null
+        val hasTarget = frameState.primaryTarget != null || frameState.primaryItem != null
 
         val reticleColor = if (hasTarget) Color(0xFFFFD700) else Color.White.copy(alpha = 0.6f)
         val reticleStroke = if (hasTarget) 3.5.dp.toPx() else 2.dp.toPx()
